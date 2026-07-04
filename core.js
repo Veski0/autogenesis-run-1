@@ -437,6 +437,26 @@ function runSelfTests() {
     assert(missing.includes('command'), 'validator must detect missing command');
   });
 
+  // Test 14: base64 encode/decode roundtrip (registered)
+  test('base64_roundtrip', () => {
+    const input = 'Hello, World! 123';
+    const encoded = Buffer.from(input, 'utf8').toString('base64');
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    assert(decoded === input, 'base64 encode/decode roundtrip must preserve content');
+    assert(encoded === 'SGVsbG8sIFdvcmxkISAxMjM=', 'expected specific base64 output');
+  });
+
+  // Test 15: system_info returns expected fields
+  test('system_info_fields', () => {
+    const defs = module.exports.toolDefinitions;
+    const siDef = defs.find((t) => t.function.name === 'system_info');
+    assert(siDef, 'system_info definition must exist');
+    const b64Def = defs.find((t) => t.function.name === 'base64');
+    assert(b64Def, 'base64 definition must exist');
+    assert(module.exports.toolHandlers['system_info'], 'system_info handler must exist');
+    assert(module.exports.toolHandlers['base64'], 'base64 handler must exist');
+  });
+
   const passed = tests.filter((t) => t.pass).length;
   const failed = tests.length - passed;
   return { ok: true, total: tests.length, passed, failed, tests };
@@ -703,7 +723,7 @@ async function systemInfoTool(args, ctx) {
       external: Math.round(mem.external / 1024 / 1024) + 'MB',
     },
     toolCount: module.exports.toolDefinitions.length,
-    testCount: 13,
+    testCount: 15,
   };
 }
 
