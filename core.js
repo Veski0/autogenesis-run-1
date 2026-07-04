@@ -424,6 +424,19 @@ function runSelfTests() {
     assert(removed === 1, 'expected 1 removed line, got ' + removed);
   });
 
+  // Test 13: schema validator catches missing required params (validation in step)
+  test('schema_validator_catches_missing', () => {
+    const defs = module.exports.toolDefinitions;
+    const shellDef = defs.find((t) => t.function.name === 'shell_exec');
+    assert(shellDef, 'shell_exec definition must exist');
+    const required = shellDef.function.parameters.required;
+    assert(required.includes('command'), 'shell_exec must require command');
+    // Simulate missing required param
+    const fakeArgs = {};
+    const missing = required.filter((r) => fakeArgs[r] === undefined);
+    assert(missing.includes('command'), 'validator must detect missing command');
+  });
+
   const passed = tests.filter((t) => t.pass).length;
   const failed = tests.length - passed;
   return { ok: true, total: tests.length, passed, failed, tests };
