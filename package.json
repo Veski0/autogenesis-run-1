@@ -1,0 +1,14 @@
+{
+  "name": "autogenesis",
+  "version": "0.0.1",
+  "private": true,
+  "type": "commonjs",
+  "description": "A self-modifying agent harness that builds itself from a tiny core.",
+  "main": "bootstrap.js",
+  "scripts": {
+    "start": "node bootstrap.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
