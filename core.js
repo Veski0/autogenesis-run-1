@@ -357,10 +357,10 @@ function runSelfTests() {
     }
   });
 
-  // Test 5: at least 8 tools registered (we expect growth over time)
+  // Test 5: at least 10 tools registered (we expect growth over time)
   test('minimum_tool_count', () => {
     const count = module.exports.toolDefinitions.length;
-    assert(count >= 8, `expected at least 8 tools, got ${count}`);
+    assert(count >= 10, `expected at least 10 tools, got ${count}`);
   });
 
   // Test 6: compaction function reduces message count
@@ -451,6 +451,93 @@ async function codeEvalTool(args, ctx) {
     };
   } catch (e) {
     return { ok: false, error: String(e.message || e), logs: logs.slice(0, 50) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File list tool — list files in a directory (like ls)
+// ---------------------------------------------------------------------------
+
+async function fileListTool(args, ctx) {
+  const { dirPath, recursive } = args;
+  const resolved = path.resolve(__dirname, dirPath || '.');
+  try {
+    if (recursive) {
+      const results = [];
+      function walk(dir, prefix) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.name === 'node_modules' || e.name === '.git') continue;
+          const rel = prefix ? prefix + '/' + e.name : e.name;
+          if (e.isDirectory()) {
+            results.push({ name: rel, type: 'dir' });
+            walk(path.join(dir, e.name), rel);
+          } else {
+            const stat = fs.statSync(path.join(dir, e.name));
+            results.push({ name: rel, type: 'file', bytes: stat.size });
+          }
+        }
+      }
+      walk(resolved, '');
+      return { ok: true, path: resolved, entries: results.slice(0, 100), count: results.length };
+    } else {
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
+      const results = entries.map((e) => {
+        if (e.isDirectory()) return { name: e.name, type: 'dir' };
+        try {
+          const stat = fs.statSync(path.join(resolved, e.name));
+          return { name: e.name, type: 'file', bytes: stat.size };
+        } catch {
+          return { name: e.name, type: e.isDirectory() ? 'dir' : 'file' };
+        }
+      });
+      return { ok: true, path: resolved, entries: results, count: results.length };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grep tool — search for a pattern within files in the harness directory
+// ---------------------------------------------------------------------------
+
+async function grepTool(args, ctx) {
+  const { pattern, dirPath, filePattern } = args;
+  if (!pattern) return { ok: false, error: 'pattern is required' };
+  const resolved = path.resolve(__dirname, dirPath || '.');
+  const regex = new RegExp(pattern, 'i');
+  const fileRegex = filePattern ? new RegExp(filePattern) : null;
+  const matches = [];
+
+  function searchDir(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.name === 'node_modules' || e.name === '.git') continue;
+      const fullPath = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        searchDir(fullPath);
+      } else if (e.isFile()) {
+        if (fileRegex && !fileRegex.test(e.name)) continue;
+        try {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (regex.test(lines[i])) {
+              matches.push({ file: path.relative(__dirname, fullPath), line: i + 1, text: lines[i].trim().slice(0, 200) });
+              if (matches.length >= 50) return;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+
+  try {
+    searchDir(resolved);
+    return { ok: true, pattern, matches: matches.slice(0, 50), count: matches.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
   }
 }
 
@@ -587,6 +674,37 @@ const toolDefinitions = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'file_list',
+      description: 'List files in a directory (like ls). Supports recursive listing. Skips node_modules and .git.',
+      parameters: {
+        type: 'object',
+        properties: {
+          dirPath: { type: 'string', description: 'Directory path relative to core.js (default: ".")' },
+          recursive: { type: 'boolean', description: 'If true, list files recursively in subdirectories.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grep',
+      description: 'Search for a regex pattern within files in the harness directory. Returns matching lines with file names and line numbers.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Regex pattern to search for (case-insensitive).' },
+          dirPath: { type: 'string', description: 'Directory to search in (default: ".")' },
+          filePattern: { type: 'string', description: 'Regex to filter file names (optional).' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
 ];
 
 const toolHandlers = {
@@ -598,6 +716,8 @@ const toolHandlers = {
   self_test: selfTestTool,
   web_fetch: webFetchTool,
   code_eval: codeEvalTool,
+  file_list: fileListTool,
+  grep: grepTool,
 };
 
 // ---------------------------------------------------------------------------
