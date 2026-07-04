@@ -412,6 +412,18 @@ function runSelfTests() {
     assert(/module\.exports/.test(content), 'grep must find module.exports in core.js');
   });
 
+  // Test 12: diff tool computes correct line changes (LCS-based)
+  test('diff_computes_changes', () => {
+    const oldT = 'line1\nline2\nline3';
+    const newT = 'line1\nmodified\nline3\nline4';
+    const d = computeDiff(oldT, newT);
+    assert(d.length > 0, 'diff must return results');
+    const added = d.filter((x) => x.type === 'added').length;
+    const removed = d.filter((x) => x.type === 'removed').length;
+    assert(added === 2, 'expected 2 added lines, got ' + added);
+    assert(removed === 1, 'expected 1 removed line, got ' + removed);
+  });
+
   const passed = tests.filter((t) => t.pass).length;
   const failed = tests.length - passed;
   return { ok: true, total: tests.length, passed, failed, tests };
@@ -562,6 +574,80 @@ async function grepTool(args, ctx) {
   } catch (e) {
     return { ok: false, error: String(e.message || e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Diff tool — compare two text strings line-by-line (minimal LCS diff)
+// ---------------------------------------------------------------------------
+
+function computeDiff(oldText, newText) {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  const diff = [];
+
+  // Simple line-by-line diff using LCS (dynamic programming)
+  const m = oldLines.length;
+  const n = newLines.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      if (oldLines[i] === newLines[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  let i = 0, j = 0;
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      diff.push({ type: 'equal', oldLine: i + 1, newLine: j + 1, text: oldLines[i] });
+      i++; j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      diff.push({ type: 'removed', oldLine: i + 1, text: oldLines[i] });
+      i++;
+    } else {
+      diff.push({ type: 'added', newLine: j + 1, text: newLines[j] });
+      j++;
+    }
+  }
+  while (i < m) { diff.push({ type: 'removed', oldLine: i + 1, text: oldLines[i] }); i++; }
+  while (j < n) { diff.push({ type: 'added', newLine: j + 1, text: newLines[j] }); j++; }
+
+  return diff;
+}
+
+async function diffTool(args, ctx) {
+  const { oldText, newText, filePath, oldFilePath, newFilePath } = args;
+  let oldStr = oldText || '';
+  let newStr = newText || '';
+
+  if (oldFilePath) {
+    try { oldStr = fs.readFileSync(path.resolve(__dirname, oldFilePath), 'utf8'); }
+    catch (e) { return { ok: false, error: 'cannot read oldFilePath: ' + e.message }; }
+  }
+  if (newFilePath) {
+    try { newStr = fs.readFileSync(path.resolve(__dirname, newFilePath), 'utf8'); }
+    catch (e) { return { ok: false, error: 'cannot read newFilePath: ' + e.message }; }
+  }
+  if (filePath) {
+    // Compare file against provided newText
+    try { oldStr = fs.readFileSync(path.resolve(__dirname, filePath), 'utf8'); }
+    catch (e) { return { ok: false, error: 'cannot read filePath: ' + e.message }; }
+  }
+
+  if (!oldStr && !newStr) return { ok: false, error: 'provide oldText+newText or filePath(s)' };
+
+  const diff = computeDiff(oldStr, newStr);
+  const added = diff.filter((d) => d.type === 'added').length;
+  const removed = diff.filter((d) => d.type === 'removed').length;
+  const equal = diff.filter((d) => d.type === 'equal').length;
+
+  // Build a readable unified-style summary (only changes, with context)
+  const changes = diff.filter((d) => d.type !== 'equal').map((d) => {
+    const prefix = d.type === 'added' ? '+' : d.type === 'removed' ? '-' : ' ';
+    return `${prefix} ${d.text.slice(0, 200)}`;
+  });
+
+  return { ok: true, added, removed, equal, totalLines: diff.length, changes: changes.slice(0, 100) };
 }
 
 const toolDefinitions = [
@@ -728,6 +814,24 @@ const toolDefinitions = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'diff',
+      description: 'Compare two text strings or files line-by-line using LCS diff. Returns added/removed/equal counts and a unified-style change list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          oldText: { type: 'string', description: 'Old text to compare (if not using file paths).' },
+          newText: { type: 'string', description: 'New text to compare (if not using file paths).' },
+          filePath: { type: 'string', description: 'File to use as old text (compared against newText).' },
+          oldFilePath: { type: 'string', description: 'File path for old text.' },
+          newFilePath: { type: 'string', description: 'File path for new text.' },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 const toolHandlers = {
@@ -741,6 +845,7 @@ const toolHandlers = {
   code_eval: codeEvalTool,
   file_list: fileListTool,
   grep: grepTool,
+  diff: diffTool,
 };
 
 // ---------------------------------------------------------------------------
