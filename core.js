@@ -74,6 +74,9 @@ const SYSTEM_PROMPT = [
 // harness keeps running, and remember the decision so we don't hammer it.
 let toolsSupported = true;
 
+const LLM_MAX_RETRIES = 3;
+const LLM_RETRY_DELAY_MS = 1000;
+
 async function callLLM(messages, tools, holder) {
   const log = holder.log;
   const body = { model: config.model, messages, temperature: 0.8 };
@@ -83,36 +86,60 @@ async function callLLM(messages, tools, holder) {
   // Authorization is optional — local servers like Ollama don't need it.
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
-  let res = await fetch(`${config.baseURL}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-
-  // If the server rejected the request because of the tools field, retry once
-  // without tools and disable tool-passing for subsequent turns.
-  if (!res.ok && toolsSupported && body.tools) {
-    const txt = await res.text();
-    if (/tool|function/i.test(txt) || res.status === 400) {
-      log.failure({ warning: 'tools_rejected_by_endpoint', status: res.status, snippet: txt.slice(0, 200) });
-      toolsSupported = false;
-      const retryBody = { model: config.model, messages, temperature: 0.8 };
+  let lastError;
+  for (let attempt = 0; attempt < LLM_MAX_RETRIES; attempt++) {
+    let res;
+    try {
       res = await fetch(`${config.baseURL}/chat/completions`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(retryBody),
+        body: JSON.stringify(body),
       });
-    } else {
+    } catch (e) {
+      // Network error — retry after delay
+      lastError = e;
+      log.failure({ warning: 'llm_network_error', attempt: attempt + 1, error: String(e.message || e).slice(0, 200) });
+      if (attempt < LLM_MAX_RETRIES - 1) {
+        await new Promise((r) => setTimeout(r, LLM_RETRY_DELAY_MS * (attempt + 1)));
+      }
+      continue;
+    }
+
+    // If the server rejected the request because of the tools field, retry once
+    // without tools and disable tool-passing for subsequent turns.
+    if (!res.ok && toolsSupported && body.tools) {
+      const txt = await res.text();
+      if (/tool|function/i.test(txt) || res.status === 400) {
+        log.failure({ warning: 'tools_rejected_by_endpoint', status: res.status, snippet: txt.slice(0, 200) });
+        toolsSupported = false;
+        const retryBody = { model: config.model, messages, temperature: 0.8 };
+        res = await fetch(`${config.baseURL}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(retryBody),
+        });
+      } else if (res.status >= 500) {
+        // Server error — retry
+        lastError = new Error(`LLM error ${res.status}: ${(await res.text()).slice(0, 500)}`);
+        log.failure({ warning: 'llm_server_error', attempt: attempt + 1, status: res.status });
+        if (attempt < LLM_MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, LLM_RETRY_DELAY_MS * (attempt + 1)));
+        }
+        continue;
+      } else {
+        const txt = await res.text();
+        throw new Error(`LLM error ${res.status}: ${txt.slice(0, 500)}`);
+      }
+    }
+
+    if (!res.ok) {
+      const txt = await res.text();
       throw new Error(`LLM error ${res.status}: ${txt.slice(0, 500)}`);
     }
+    const data = await res.json();
+    return data.choices[0].message;
   }
-
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`LLM error ${res.status}: ${txt.slice(0, 500)}`);
-  }
-  const data = await res.json();
-  return data.choices[0].message;
+  throw lastError || new Error('LLM call failed after ' + LLM_MAX_RETRIES + ' retries');
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +484,18 @@ function runSelfTests() {
     assert(module.exports.toolHandlers['base64'], 'base64 handler must exist');
   });
 
+  // Test 16: hash tool produces correct SHA-256
+  test('hash_tool_sha256', () => {
+    const defs = module.exports.toolDefinitions;
+    const hashDef = defs.find((t) => t.function.name === 'hash');
+    assert(hashDef, 'hash definition must exist');
+    assert(module.exports.toolHandlers['hash'], 'hash handler must exist');
+    // Verify known SHA-256 hash of 'hello'
+    const crypto = require('crypto');
+    const h = crypto.createHash('sha256').update('hello').digest('hex');
+    assert(h === '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 'SHA-256 of hello must match known value');
+  });
+
   const passed = tests.filter((t) => t.pass).length;
   const failed = tests.length - passed;
   return { ok: true, total: tests.length, passed, failed, tests };
@@ -684,6 +723,35 @@ async function diffTool(args, ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Hash tool — compute SHA-256 hash of a string or file
+// ---------------------------------------------------------------------------
+
+const crypto = require('crypto');
+
+async function hashTool(args, ctx) {
+  const { input, filePath, algorithm } = args;
+  const algo = algorithm || 'sha256';
+  let data;
+  if (filePath) {
+    try {
+      data = fs.readFileSync(path.resolve(__dirname, filePath));
+    } catch (e) {
+      return { ok: false, error: 'cannot read file: ' + e.message };
+    }
+  } else if (input) {
+    data = Buffer.from(input, 'utf8');
+  } else {
+    return { ok: false, error: 'provide input or filePath' };
+  }
+  try {
+    const hash = crypto.createHash(algo).update(data).digest('hex');
+    return { ok: true, algorithm: algo, hash, bytes: data.length };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base64 encode/decode tool (registered)
 // ---------------------------------------------------------------------------
 
@@ -723,7 +791,7 @@ async function systemInfoTool(args, ctx) {
       external: Math.round(mem.external / 1024 / 1024) + 'MB',
     },
     toolCount: module.exports.toolDefinitions.length,
-    testCount: 15,
+    testCount: 16,
   };
 }
 
@@ -927,6 +995,22 @@ const toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'hash',
+      description: 'Compute a cryptographic hash (SHA-256 by default) of a string or file. Useful for checksums and integrity verification.',
+      parameters: {
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: 'String to hash (if not using filePath).' },
+          filePath: { type: 'string', description: 'Path to file to hash (relative to core.js).' },
+          algorithm: { type: 'string', description: 'Hash algorithm: sha256 (default), sha1, md5, sha512.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'system_info',
       description: 'Get system information: Node version, platform, memory usage, uptime, tool count.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -947,6 +1031,7 @@ const toolHandlers = {
   grep: grepTool,
   diff: diffTool,
   base64: base64Tool,
+  hash: hashTool,
   system_info: systemInfoTool,
 };
 
@@ -1004,20 +1089,21 @@ function compactMessages(messages) {
 // ---------------------------------------------------------------------------
 
 const GOAL_QUEUE = [
-  // COMPLETED (kept for history): README.md, diff tool, JSON schema validator, file_list, grep, self-test suite
+  // COMPLETED: README.md, diff tool, JSON schema validator, file_list, grep, self-test suite,
+  //   base64 tool, system_info tool, hash tool, LLM retry mechanism
   // Active goals:
-  'Add a base64 encode/decode tool for binary-safe data handling.',
-  'Add a hash tool (SHA-256) to checksum files and verify integrity.',
   'Add a tool to run the full test suite and auto-commit if all pass.',
   'Refactor step() to support parallel tool calls more robustly.',
   'Add a tool to create and manage a todo list in memory for task tracking.',
   'Add a tool to measure code complexity or line count of core.js.',
-  'Add a retry mechanism for LLM calls that timeout or return 5xx.',
   'Add a tool to fetch and parse JSON from an API endpoint.',
   'Add a tool to create a backup of core.js before editing.',
   'Improve compaction to preserve tool results in the summary.',
   'Add a tool to list all tool definitions in a readable format.',
-  'Add a tool to get system info (Node version, memory usage, uptime).',
+  'Add a tool to download and save web content to a file.',
+  'Add a tool to count lines, words, and characters in a file (wc).',
+  'Add a tool to generate a UUID.',
+  'Add a tool to sleep/delay for a specified number of milliseconds.',
 ];
 
 function generateNextTurn(state) {

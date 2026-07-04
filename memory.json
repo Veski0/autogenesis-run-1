@@ -9,6 +9,6 @@
     "Refactor step() for clarity and add better error recovery.",
     "Add a planner that cycles through goals and tracks progress in memory."
   ],
-  "goalIndex": 3,
+  "goalIndex": 5,
   "gitInitialized": "true"
 }
