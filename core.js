@@ -987,11 +987,22 @@ async function step(state, holder, CORE_PATH) {
         result = { ok: false, error: `unknown tool: ${name}` };
         log.failure(result);
       } else {
-        try {
-          result = await handler(args, { holder, CORE_PATH });
-        } catch (e) {
-          result = { ok: false, error: String((e && e.message) || e) };
-          log.failure({ tool: name, error: result.error });
+        // Validate required parameters against tool definition
+        const def = tools.find((t) => t.function.name === name);
+        if (def && def.function.parameters && def.function.parameters.required) {
+          const missing = def.function.parameters.required.filter((r) => args[r] === undefined);
+          if (missing.length) {
+            result = { ok: false, error: `missing required parameters: ${missing.join(', ')}` };
+            log.failure({ tool: name, error: result.error, missing });
+          }
+        }
+        if (!result) {
+          try {
+            result = await handler(args, { holder, CORE_PATH });
+          } catch (e) {
+            result = { ok: false, error: String((e && e.message) || e) };
+            log.failure({ tool: name, error: result.error });
+          }
         }
       }
 
