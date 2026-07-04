@@ -1,5 +1,5 @@
 {
-  "progress": "Major progress: 8 tools total (self_edit, memory, shell_exec, file_read, file_write, self_test, web_fetch, code_eval). 8 self-tests all passing. Compaction implemented (threshold 40, keep 20). Goal-driven self-generated turns with GOAL_QUEUE. Next: write README, update GOAL_QUEUE with new goals, add git status check.",
+  "progress": "10 tools registered (self_edit, memory, shell_exec, file_read, file_write, self_test, web_fetch, code_eval, file_list, grep). 8 self-tests passing. Git initialized. README written. Next: improve self-test edge cases, refactor step(), add JSON schema validator.",
   "goals": [
     "Add a web_fetch tool for fetching URLs.",
     "Add a code_eval tool to run JavaScript snippets in a sandbox.",
@@ -9,6 +9,6 @@
     "Refactor step() for clarity and add better error recovery.",
     "Add a planner that cycles through goals and tracks progress in memory."
   ],
-  "goalIndex": 4,
+  "goalIndex": 5,
   "gitInitialized": "true"
 }

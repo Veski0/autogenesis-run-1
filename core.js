@@ -389,6 +389,29 @@ function runSelfTests() {
     assert(result === 'undefined', 'require should be undefined in sandbox');
   });
 
+  // Test 9: file_read/file_write roundtrip
+  test('file_read_write_roundtrip', () => {
+    const testFile = path.join(__dirname, '__selftest_file__.txt');
+    const testContent = 'Hello harness self-test!\nLine 2.\n';
+    fs.writeFileSync(testFile, testContent);
+    const read = fs.readFileSync(testFile, 'utf8');
+    assert(read === testContent, 'file write/read roundtrip must preserve content');
+    fs.unlinkSync(testFile);
+  });
+
+  // Test 10: file_list returns entries
+  test('file_list_returns_entries', () => {
+    const entries = fs.readdirSync(__dirname, { withFileTypes: true });
+    const names = entries.map((e) => e.name);
+    assert(names.includes('core.js'), 'file_list must include core.js');
+  });
+
+  // Test 11: grep finds patterns in core.js (sync version)
+  test('grep_finds_patterns', () => {
+    const content = fs.readFileSync(path.join(__dirname, 'core.js'), 'utf8');
+    assert(/module\.exports/.test(content), 'grep must find module.exports in core.js');
+  });
+
   const passed = tests.filter((t) => t.pass).length;
   const failed = tests.length - passed;
   return { ok: true, total: tests.length, passed, failed, tests };
