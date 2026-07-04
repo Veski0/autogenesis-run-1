@@ -663,6 +663,50 @@ async function diffTool(args, ctx) {
   return { ok: true, added, removed, equal, totalLines: diff.length, changes: changes.slice(0, 100) };
 }
 
+// ---------------------------------------------------------------------------
+// Base64 encode/decode tool (registered)
+// ---------------------------------------------------------------------------
+
+async function base64Tool(args, ctx) {
+  const { action, input } = args;
+  if (!input) return { ok: false, error: 'input is required' };
+  try {
+    if (action === 'encode') {
+      return { ok: true, result: Buffer.from(input, 'utf8').toString('base64') };
+    } else if (action === 'decode') {
+      return { ok: true, result: Buffer.from(input, 'base64').toString('utf8') };
+    } else {
+      return { ok: false, error: 'unknown action: ' + action + ' (use encode or decode)' };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// System info tool — Node version, memory, uptime
+// ---------------------------------------------------------------------------
+
+async function systemInfoTool(args, ctx) {
+  const mem = process.memoryUsage();
+  return {
+    ok: true,
+    nodeVersion: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    pid: process.pid,
+    uptime: Math.round(process.uptime()) + 's',
+    memory: {
+      rss: Math.round(mem.rss / 1024 / 1024) + 'MB',
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + 'MB',
+      heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + 'MB',
+      external: Math.round(mem.external / 1024 / 1024) + 'MB',
+    },
+    toolCount: module.exports.toolDefinitions.length,
+    testCount: 13,
+  };
+}
+
 const toolDefinitions = [
   {
     type: 'function',
@@ -845,6 +889,29 @@ const toolDefinitions = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'base64',
+      description: 'Encode or decode base64 strings. Useful for binary-safe data handling.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['encode', 'decode'], description: 'Whether to encode or decode.' },
+          input: { type: 'string', description: 'The input string to encode or decode.' },
+        },
+        required: ['action', 'input'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'system_info',
+      description: 'Get system information: Node version, platform, memory usage, uptime, tool count.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 const toolHandlers = {
@@ -859,6 +926,8 @@ const toolHandlers = {
   file_list: fileListTool,
   grep: grepTool,
   diff: diffTool,
+  base64: base64Tool,
+  system_info: systemInfoTool,
 };
 
 // ---------------------------------------------------------------------------
@@ -915,16 +984,20 @@ function compactMessages(messages) {
 // ---------------------------------------------------------------------------
 
 const GOAL_QUEUE = [
-  'Write a README.md documenting the harness architecture and tools.',
-  'Add a git status check and commit recent changes.',
-  'Improve the self-test suite with more edge cases — test file_read/file_write roundtrip.',
-  'Refactor step() for clarity and add better error recovery.',
-  'Add a planner that cycles through goals and tracks progress in memory.',
-  'Add a tool to list files in the harness directory (like ls).',
-  'Add a tool to search/grep within files in the harness directory.',
-  'Add HTTP status monitoring — periodically fetch a health-check URL.',
-  'Add a diff tool to compare two versions of core.js before and after an edit.',
-  'Add a JSON schema validator for tool arguments before dispatching to handlers.',
+  // COMPLETED (kept for history): README.md, diff tool, JSON schema validator, file_list, grep, self-test suite
+  // Active goals:
+  'Add a base64 encode/decode tool for binary-safe data handling.',
+  'Add a hash tool (SHA-256) to checksum files and verify integrity.',
+  'Add a tool to run the full test suite and auto-commit if all pass.',
+  'Refactor step() to support parallel tool calls more robustly.',
+  'Add a tool to create and manage a todo list in memory for task tracking.',
+  'Add a tool to measure code complexity or line count of core.js.',
+  'Add a retry mechanism for LLM calls that timeout or return 5xx.',
+  'Add a tool to fetch and parse JSON from an API endpoint.',
+  'Add a tool to create a backup of core.js before editing.',
+  'Improve compaction to preserve tool results in the summary.',
+  'Add a tool to list all tool definitions in a readable format.',
+  'Add a tool to get system info (Node version, memory usage, uptime).',
 ];
 
 function generateNextTurn(state) {
